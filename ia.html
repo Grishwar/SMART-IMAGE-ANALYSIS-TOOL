@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Image Metadata Extractor</title>
+  <style>
+    body { background: #555; color: #222; font-family: Arial; }
+    h2 { margin-left: 20px; }
+    #errorMsg { color: red; margin-top: 10px; }
+    #result { white-space: pre-wrap; background: #f4f4f4; border-radius: 8px; padding: 16px; margin: 20px 0 0 20px; font-size: 16px; }
+    form { margin-left: 20px; margin-top: 20px; }
+    button, input[type="file"] { margin-right: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Upload an Image</h2>
+  <form id="uploadForm" autocomplete="off">
+    <input type="file" id="imageInput" accept="image/*">
+    <button type="button" id="cancelBtn">Cancel</button>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="errorMsg"></div>
+  <div id="result"></div>
+  <script>
+    const uploadForm = document.getElementById('uploadForm');
+    const imageInput = document.getElementById('imageInput');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const errorMsg = document.getElementById('errorMsg');
+    const result = document.getElementById('result');
+
+    cancelBtn.onclick = function() {
+      imageInput.value = '';
+      errorMsg.textContent = '';
+      result.textContent = '';
+    };
+
+    uploadForm.onsubmit = function(e) {
+      e.preventDefault();
+      errorMsg.textContent = '';
+      result.textContent = '';
+      if (!imageInput.files.length) {
+        errorMsg.textContent = 'Please select an image before submitting!';
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', imageInput.files[0]);
+      fetch('http://localhost:8080/upload-image', {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.error) {
+          errorMsg.textContent = data.error;
+        } else {
+          result.textContent =
+            `Make: ${data.deviceMake || 'N/A'}\nModel: ${data.deviceModel || 'N/A'}\n` +
+            `Date: ${data.dateTime || 'N/A'}\nLatitude: ${data.latitude || 'N/A'}\nLongitude: ${data.longitude || 'N/A'}\nHeight: ${data.height || 'N/A'}\nWidth: ${data.width || 'N/A'}`;
+        }
+      })
+      .catch(() => errorMsg.textContent = 'Upload failed.');
+    };
+  </script>
+</body>
+</html>
+
