@@ -1,12 +1,11 @@
 package com.example.metaextract;
 
-import com.drew.imaging.ImageMetadataReader;
-import com.drew.metadata.Metadata;
-import com.drew.metadata.Directory;
-import com.drew.metadata.exif.ExifSubIFDDirectory;
-
 import java.io.File;
 import java.util.Date;
+
+import com.drew.imaging.ImageMetadataReader;
+import com.drew.metadata.Metadata;
+import com.drew.metadata.exif.ExifSubIFDDirectory;
 
 public class ImageMetadataController {
 
