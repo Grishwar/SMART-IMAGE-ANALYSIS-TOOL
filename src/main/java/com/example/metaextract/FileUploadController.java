@@ -41,11 +41,7 @@ public class FileUploadController {
         report.append("\n=========== FORENSIC IMAGE REPORT ===========\n");
 
         File dir = new File(UPLOAD_DIR);
-        if (!dir.exists()) {
-            dir.mkdirs();
-            System.out.println("Created upload directory: " + dir.getAbsolutePath());
-        }
-
+        if (!dir.exists()) dir.mkdirs();
 
         List<ImageData> movement = new ArrayList<>();
         Set<String> hashes = new HashSet<>();
@@ -61,9 +57,8 @@ public class FileUploadController {
                 report.append("\n============================================\n");
                 report.append("File: ").append(name).append("\n");
 
-                // duplicate check (same upload only)
                 String hash = sha256(saved);
-                if(hashes.contains(hash)) report.append("Duplicate: YES (Same Upload Batch)\n");
+                if(hashes.contains(hash)) report.append("Duplicate: YES\n");
                 else { hashes.add(hash); report.append("Duplicate: NO\n"); }
 
                 Metadata metadata = ImageMetadataReader.readMetadata(saved);
@@ -74,35 +69,23 @@ public class FileUploadController {
 
                 int risk=0;
 
-                // ===== TIME =====
                 Date captureDate=null;
                 String capture="Not Available";
 
                 if(dateDir!=null && dateDir.containsTag(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL)){
-
-                    // RAW EXIF TIME (NO TIMEZONE CONVERSION)
                     capture = dateDir.getString(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL);
-
-                    // convert only for calculations (movement), not display
-                    try {
-                        captureDate = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss").parse(capture);
-                    } catch(Exception e){}
-
-                    // make display format nice
-                    if(capture!=null)
-                        capture = capture.replaceFirst(":", "-").replaceFirst(":", "-");
-                }
-                else risk+=30;
+                    captureDate = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss").parse(capture);
+                    capture = capture.replaceFirst(":", "-").replaceFirst(":", "-");
+                } else risk+=30;
 
                 report.append("Capture Time: ").append(capture).append("\n");
 
-                // ===== CAMERA =====
                 String make=camDir!=null?camDir.getString(ExifIFD0Directory.TAG_MAKE):null;
                 String model=camDir!=null?camDir.getString(ExifIFD0Directory.TAG_MODEL):null;
+
                 report.append("Camera Make: ").append(make).append("\n");
                 report.append("Camera Model: ").append(model).append("\n");
 
-                // ===== GPS =====
                 double lat=0,lon=0;
                 boolean hasGPS=false;
                 String location="Unknown Location";
@@ -120,16 +103,13 @@ public class FileUploadController {
                 } else risk+=20;
 
                 report.append("Location: ").append(location).append("\n");
-                report.append("Location Category: ").append(classifyLocation(location)).append("\n");
 
-                // ===== TIMESTAMP CHECK =====
                 if(captureDate!=null){
                     long diff=Math.abs(saved.lastModified()-captureDate.getTime())/(1000*60*60);
                     if(diff>720){ report.append("Timestamp Check: Suspicious\n"); risk+=20; }
                     else report.append("Timestamp Check: Valid\n");
                 }
 
-                // ===== RECOMPRESSION =====
                 report.append("Recompression Analysis: Single Compression (Likely Original)\n");
 
                 int authenticity=Math.max(0,100-risk);
@@ -137,7 +117,6 @@ public class FileUploadController {
                 report.append("Authenticity Score: ").append(authenticity).append("\n");
                 report.append(risk>=60?"Status: HIGHLY SUSPICIOUS\n":risk>=30?"Status: Possibly Modified\n":"Status: Likely Genuine\n");
 
-                // ===== FULL METADATA =====
                 report.append("\n-------- FULL METADATA --------\n");
                 for(Directory d:metadata.getDirectories()){
                     report.append("\n[").append(d.getName()).append("]\n");
@@ -156,12 +135,13 @@ public class FileUploadController {
         if(movement.size()>=2)
             report.append(generateMovement(movement));
 
-        lastReport=report.toString();
-        return report.toString();
+        lastReport = report.toString();
+        return lastReport;
     }
 
-    // ========================= MOVEMENT =========================
+    // ========================= MOVEMENT (UPDATED) =========================
     private String generateMovement(List<ImageData> list){
+
         StringBuilder r=new StringBuilder("\n=========== MOVEMENT FORENSIC REPORT ===========\n");
 
         list.sort(Comparator.comparing(i->i.date));
@@ -169,19 +149,21 @@ public class FileUploadController {
 
         double hours=Math.abs(b.date.getTime()-a.date.getTime())/3600000.0;
 
+        // AIR
         double air=haversine(a.lat,a.lon,b.lat,b.lon);
         double airSpeed=air/Math.max(hours,1);
 
-        r.append("\nAIR TRAVEL ANALYSIS\n");
+        r.append("AIR TRAVEL ANALYSIS\n");
         r.append("Distance: ").append(round(air)).append(" km\n");
         r.append("Time Gap: ").append(round(hours)).append(" hrs\n");
         r.append("Speed: ").append(round(airSpeed)).append(" km/h\n");
-        r.append("Result: ").append(classifyMovement(airSpeed)).append("\n");
+        r.append("Result: ").append(classifyMovement(airSpeed)).append("\n\n");
 
+        // ROAD
         double road=getRoadDistance(a.lat,a.lon,b.lat,b.lon);
-        double roadSpeed=road>0?road/Math.max(hours,1):0;
+        double roadSpeed=road/Math.max(hours,1);
 
-        r.append("\nROAD TRAVEL ANALYSIS\n");
+        r.append("ROAD TRAVEL ANALYSIS\n");
         r.append("Distance: ").append(round(road)).append(" km\n");
         r.append("Speed: ").append(round(roadSpeed)).append(" km/h\n");
         r.append("Result: ").append(classifyMovement(roadSpeed)).append("\n");
@@ -196,12 +178,21 @@ public class FileUploadController {
         return "Natural Movement";
     }
 
-    // ========================= PDF =========================
+    private double getRoadDistance(double lat1,double lon1,double lat2,double lon2){
+        try{
+            String url="https://api.openrouteservice.org/v2/directions/driving-car?api_key="+ORS_API_KEY+"&start="+lon1+","+lat1+"&end="+lon2+","+lat2;
+            Map<?,?> json=new ObjectMapper().readValue(new URL(url),Map.class);
+            Map<?,?> feature=(Map<?,?>)((List<?>)json.get("features")).get(0);
+            Map<?,?> summary=(Map<?,?>)((Map<?,?>)feature.get("properties")).get("summary");
+            return ((Number)summary.get("distance")).doubleValue()/1000.0;
+        }catch(Exception e){return 0;}
+    }
+
     @PostMapping("/downloadPdf")
     public void downloadPdf(HttpServletResponse response) throws Exception {
 
         response.setContentType("application/pdf");
-        response.setHeader("Content-Disposition","attachment; filename=forensic_report.pdf");
+        response.setHeader("Content-Disposition","attachment; filename=Forensic_Report.pdf");
 
         Document doc=new Document();
         PdfWriter.getInstance(doc,response.getOutputStream());
@@ -213,7 +204,6 @@ public class FileUploadController {
         doc.close();
     }
 
-    // ========================= HELPERS =========================
     private String reverseGeocode(double lat,double lon){
         try{
             String url="https://api.opencagedata.com/geocode/v1/json?q="+URLEncoder.encode(lat+","+lon,"UTF-8")+"&key="+OPENCAGE_KEY;
@@ -222,16 +212,6 @@ public class FileUploadController {
             if(!res.isEmpty()) return ((Map<?,?>)res.get(0)).get("formatted").toString();
         }catch(Exception ignored){}
         return "Unknown Location";
-    }
-
-    private String classifyLocation(String addr){
-        if(addr==null) return "Unknown";
-        addr=addr.toLowerCase();
-        if(addr.contains("college")||addr.contains("school")) return "Institutional Area";
-        if(addr.contains("airport")||addr.contains("military")) return "Restricted Area";
-        if(addr.contains("mall")||addr.contains("market")) return "Commercial Area";
-        if(addr.contains("street")||addr.contains("residential")) return "Residential Area";
-        return "General Area";
     }
 
     private String sha256(File f)throws Exception{
@@ -250,16 +230,6 @@ public class FileUploadController {
         double dLat=Math.toRadians(la2-la1), dLon=Math.toRadians(lo2-lo1);
         double a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(Math.toRadians(la1))*Math.cos(Math.toRadians(la2))*Math.sin(dLon/2)*Math.sin(dLon/2);
         return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-    }
-
-    private double getRoadDistance(double lat1,double lon1,double lat2,double lon2){
-        try{
-            String url="https://api.openrouteservice.org/v2/directions/driving-car?api_key="+ORS_API_KEY+"&start="+lon1+","+lat1+"&end="+lon2+","+lat2;
-            Map<?,?> json=new ObjectMapper().readValue(new URL(url),Map.class);
-            Map<?,?> feature=(Map<?,?>)((List<?>)json.get("features")).get(0);
-            Map<?,?> summary=(Map<?,?>)((Map<?,?>)feature.get("properties")).get("summary");
-            return ((Number)summary.get("distance")).doubleValue()/1000.0;
-        }catch(Exception e){return -1;}
     }
 
     private double round(double v){ return Math.round(v*100.0)/100.0; }

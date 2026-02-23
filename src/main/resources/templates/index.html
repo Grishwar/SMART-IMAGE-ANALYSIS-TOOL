@@ -3,35 +3,132 @@
 <head>
     <meta charset="UTF-8">
     <title>MetaExtract Digital Forensic Tool</title>
-    <link rel="stylesheet" href="/style.css">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <style>
+        body{
+            background:#0b1e2d;
+            color:white;
+            font-family:Arial;
+            text-align:center;
+        }
+        .container{ width:90%; margin:auto; }
+
+        .upload-box{
+            border:2px dashed #00d9ff;
+            padding:20px;
+            margin:20px auto;
+            width:450px;
+            border-radius:10px;
+        }
+
+        button{
+            background:#19c37d;
+            border:none;
+            padding:10px 15px;
+            margin:5px;
+            border-radius:6px;
+            color:white;
+            font-weight:bold;
+            cursor:pointer;
+        }
+        button:hover{ background:#13a46a; }
+
+        table{
+            width:95%;
+            margin:20px auto;
+            border-collapse:collapse;
+        }
+        th,td{
+            border:1px solid #00d9ff;
+            padding:8px;
+        }
+        th{ background:#072d44; }
+
+        #map{ height:400px; margin-top:20px; }
+
+        .loading{
+            color:#00ffd0;
+            font-weight:bold;
+        }
+
+        /* MODAL */
+        .modal{
+            display:none;
+            position:fixed;
+            top:10%;
+            left:10%;
+            width:80%;
+            height:70%;
+            background:#061420;
+            border:2px solid #00d9ff;
+            overflow:auto;
+            padding:20px;
+            z-index:9999;
+            text-align:left;
+        }
+        .close-btn{
+            float:right;
+            background:red;
+            padding:5px 10px;
+        }
+    </style>
 </head>
 
 <body>
-
 <div class="container">
 
     <h1>🔍 MetaExtract Digital Forensic Tool</h1>
 
     <div class="upload-box">
 
-        <form id="uploadForm">
-            <input type="file" id="files" name="files" multiple required>
-            <button type="submit">Analyze Images</button>
-        </form>
+        <input type="file" id="files" multiple>
+        <br><br>
 
-        <p id="loading" class="loading hidden">Analyzing... Please wait ⏳</p>
+        <button id="analyzeBtn">Analyze</button>
 
-        <button id="downloadBtn" class="hidden">Download PDF Report</button>
+        <select id="reportType">
+            <option value="court">Court Investigation Report</option>
+            <option value="full">Full Metadata Report</option>
+        </select>
+
+        <button id="pdfBtn">Download PDF</button>
+        <button id="routeBtn" style="display:none;">Open Route</button>
+
+        <p id="loading" class="loading" style="display:none;">
+            Analyzing... Please wait ⏳
+        </p>
 
     </div>
 
-    <textarea id="output" readonly>
-Forensic report will appear here...
-    </textarea>
+    <div id="movement"></div>
+
+    <table id="resultTable">
+        <thead>
+        <tr>
+            <th>File</th>
+            <th>Risk</th>
+            <th>Authenticity</th>
+            <th>Status</th>
+            <th>Location</th>
+            <th>Details</th>
+        </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <div id="map"></div>
 
 </div>
 
-<script src="/script.js"></script>
+<!-- METADATA MODAL -->
+<div id="metadataModal" class="modal">
+    <button class="close-btn" onclick="closeModal()">Close</button>
+    <pre id="metadataContent"></pre>
+</div>
 
+<script src="/script.js"></script>
 </body>
 </html>
