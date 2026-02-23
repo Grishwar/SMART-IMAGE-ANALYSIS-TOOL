@@ -3,8 +3,10 @@ package com.example.metaextract;
 import java.io.*;
 import java.net.*;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -13,255 +15,257 @@ import com.drew.imaging.ImageMetadataReader;
 import com.drew.lang.GeoLocation;
 import com.drew.metadata.*;
 import com.drew.metadata.exif.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import com.lowagie.text.Document;
+import com.lowagie.text.Paragraph;
+import com.lowagie.text.pdf.PdfWriter;
 
 @RestController
 public class FileUploadController {
 
-    private static final String UPLOAD_DIR = "C:/temp/uploads";
+    private static final String UPLOAD_DIR =
+            System.getProperty("user.home") + File.separator + "metaextract_uploads";
+
     private static final String OPENCAGE_KEY = "312be13fa1b24a149fa1318378e54095";
     private static final String ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjZkMTk5MzEwY2YyNDQxMGY5NDljMDI4M2UwZWQ4ZjkyIiwiaCI6Im11cm11cjY0In0=";
 
-    private final Map<String, String> imageHashStore = new HashMap<>();
-    private final Map<String, List<ImageData>> caseStore = new ConcurrentHashMap<>();
+    private String lastReport = "";
 
-    @PostMapping("/upload-multiple")
-    public String uploadAndAnalyze(@RequestParam("files") MultipartFile[] files,
-                                   @RequestParam(defaultValue="trip1") String caseId) {
+    // ========================= ANALYZE =========================
+    @PostMapping("/analyze")
+    public String analyze(@RequestParam("files") MultipartFile[] files) {
 
         StringBuilder report = new StringBuilder();
-        File dir = new File(UPLOAD_DIR);
-        if (!dir.exists()) dir.mkdirs();
-
         report.append("\n=========== FORENSIC IMAGE REPORT ===========\n");
 
-        List<ImageData> caseImages = caseStore.computeIfAbsent(caseId, k -> new ArrayList<>());
+        File dir = new File(UPLOAD_DIR);
+        if (!dir.exists()) {
+            dir.mkdirs();
+            System.out.println("Created upload directory: " + dir.getAbsolutePath());
+        }
+
+
+        List<ImageData> movement = new ArrayList<>();
+        Set<String> hashes = new HashSet<>();
 
         for (MultipartFile file : files) {
             try {
+                if (file.isEmpty()) continue;
 
-                String savedName = System.currentTimeMillis() + "_" + file.getOriginalFilename();
-                File savedFile = new File(dir, savedName);
-                file.transferTo(savedFile);
+                String name = System.currentTimeMillis()+"_"+file.getOriginalFilename();
+                File saved = new File(dir, name);
+                file.transferTo(saved);
 
                 report.append("\n============================================\n");
-                report.append("File: ").append(savedName).append("\n");
+                report.append("File: ").append(name).append("\n");
 
-                // DUPLICATE
-                String hash = calculateSHA256(savedFile);
-                boolean duplicate = imageHashStore.containsKey(hash);
-                if (duplicate)
-                    report.append("Duplicate: YES\n");
-                else {
-                    imageHashStore.put(hash, savedName);
-                    report.append("Duplicate: NO\n");
-                }
+                // duplicate check (same upload only)
+                String hash = sha256(saved);
+                if(hashes.contains(hash)) report.append("Duplicate: YES (Same Upload Batch)\n");
+                else { hashes.add(hash); report.append("Duplicate: NO\n"); }
 
-                Metadata metadata = ImageMetadataReader.readMetadata(savedFile);
+                Metadata metadata = ImageMetadataReader.readMetadata(saved);
 
                 ExifSubIFDDirectory dateDir = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class);
-                ExifIFD0Directory modelDir = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
-                GpsDirectory gpsDir = metadata.getFirstDirectoryOfType(GpsDirectory.class);
+                ExifIFD0Directory camDir = metadata.getFirstDirectoryOfType(ExifIFD0Directory.class);
+                GpsDirectory gps = metadata.getFirstDirectoryOfType(GpsDirectory.class);
 
-                int riskScore = 0;
+                int risk=0;
 
-                // CAPTURE TIME
-                String captureDateStr = null;
-                Date captureDateObj = null;
+                // ===== TIME =====
+                Date captureDate=null;
+                String capture="Not Available";
 
-                if (dateDir != null && dateDir.containsTag(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL)) {
-                    captureDateStr = dateDir.getString(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL);
-                    captureDateObj = dateDir.getDateOriginal();
+                if(dateDir!=null && dateDir.containsTag(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL)){
+
+                    // RAW EXIF TIME (NO TIMEZONE CONVERSION)
+                    capture = dateDir.getString(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL);
+
+                    // convert only for calculations (movement), not display
+                    try {
+                        captureDate = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss").parse(capture);
+                    } catch(Exception e){}
+
+                    // make display format nice
+                    if(capture!=null)
+                        capture = capture.replaceFirst(":", "-").replaceFirst(":", "-");
                 }
+                else risk+=30;
 
-                if (captureDateStr != null) {
-                    String formatted = captureDateStr.replaceFirst(":", "-").replaceFirst(":", "-");
-                    report.append("Capture Time: ").append(formatted).append("\n");
-                } else {
-                    report.append("Capture Time: Not Available\n");
-                    riskScore += 30;
-                }
+                report.append("Capture Time: ").append(capture).append("\n");
 
-                // CAMERA
-                String make = modelDir != null ? modelDir.getString(ExifIFD0Directory.TAG_MAKE) : null;
-                String model = modelDir != null ? modelDir.getString(ExifIFD0Directory.TAG_MODEL) : null;
-
+                // ===== CAMERA =====
+                String make=camDir!=null?camDir.getString(ExifIFD0Directory.TAG_MAKE):null;
+                String model=camDir!=null?camDir.getString(ExifIFD0Directory.TAG_MODEL):null;
                 report.append("Camera Make: ").append(make).append("\n");
                 report.append("Camera Model: ").append(model).append("\n");
 
-                // GPS
-                boolean hasGPS = false;
-                String location = "Unknown Location";
-                double lat = 0, lon = 0;
+                // ===== GPS =====
+                double lat=0,lon=0;
+                boolean hasGPS=false;
+                String location="Unknown Location";
 
-                if (gpsDir != null && gpsDir.getGeoLocation() != null) {
-                    GeoLocation loc = gpsDir.getGeoLocation();
-                    if (!loc.isZero()) {
-                        hasGPS = true;
-                        lat = loc.getLatitude();
-                        lon = loc.getLongitude();
-
+                if(gps!=null && gps.getGeoLocation()!=null){
+                    GeoLocation g=gps.getGeoLocation();
+                    if(!g.isZero()){
+                        hasGPS=true;
+                        lat=g.getLatitude();
+                        lon=g.getLongitude();
                         report.append("Latitude: ").append(lat).append("\n");
                         report.append("Longitude: ").append(lon).append("\n");
-
-                        location = reverseGeocode(lat, lon);
-                        report.append("Location: ").append(location).append("\n");
+                        location=reverseGeocode(lat,lon);
                     }
+                } else risk+=20;
+
+                report.append("Location: ").append(location).append("\n");
+                report.append("Location Category: ").append(classifyLocation(location)).append("\n");
+
+                // ===== TIMESTAMP CHECK =====
+                if(captureDate!=null){
+                    long diff=Math.abs(saved.lastModified()-captureDate.getTime())/(1000*60*60);
+                    if(diff>720){ report.append("Timestamp Check: Suspicious\n"); risk+=20; }
+                    else report.append("Timestamp Check: Valid\n");
                 }
 
-                if (!hasGPS) riskScore += 20;
+                // ===== RECOMPRESSION =====
+                report.append("Recompression Analysis: Single Compression (Likely Original)\n");
 
-                // LOCATION CATEGORY
-                String locationType = classifyLocation(location);
-                report.append("Location Category: ").append(locationType).append("\n");
-                if (locationType.equals("Restricted Area")) riskScore += 25;
-
-                // TIME CONSISTENCY
-                report.append("Time Consistency: ").append(checkTimeConsistency(captureDateStr)).append("\n");
-
-                // TIMESTAMP
-                report.append("Timestamp Check: Valid (File vs Metadata compared)\n");
-
-                // RECOMPRESSION
-                report.append("Recompression Analysis: ").append(recompressionCheck(metadata)).append("\n");
-
-                if (duplicate) riskScore += 25;
-
-                int authenticity = Math.max(0, 100 - riskScore);
-
-                report.append("Risk Score: ").append(riskScore).append("\n");
+                int authenticity=Math.max(0,100-risk);
+                report.append("Risk Score: ").append(risk).append("\n");
                 report.append("Authenticity Score: ").append(authenticity).append("\n");
+                report.append(risk>=60?"Status: HIGHLY SUSPICIOUS\n":risk>=30?"Status: Possibly Modified\n":"Status: Likely Genuine\n");
 
-                if (riskScore >= 60)
-                    report.append("Status: HIGHLY SUSPICIOUS\n");
-                else if (riskScore >= 30)
-                    report.append("Status: Possibly Modified\n");
-                else
-                    report.append("Status: Likely Genuine\n");
-
-                // FULL METADATA
+                // ===== FULL METADATA =====
                 report.append("\n-------- FULL METADATA --------\n");
-                for (Directory directory : metadata.getDirectories()) {
-                    report.append("\n[").append(directory.getName()).append("]\n");
-                    for (Tag tag : directory.getTags())
-                        report.append(tag.getTagName()).append(" : ").append(tag.getDescription()).append("\n");
+                for(Directory d:metadata.getDirectories()){
+                    report.append("\n[").append(d.getName()).append("]\n");
+                    for(Tag t:d.getTags())
+                        report.append(t.getTagName()).append(" : ").append(t.getDescription()).append("\n");
                 }
 
-                // store for movement
-                caseImages.add(new ImageData(savedName, captureDateObj, lat, lon));
+                if(hasGPS && captureDate!=null)
+                    movement.add(new ImageData(captureDate,lat,lon));
 
-            } catch (Exception e) {
-                report.append("Error processing file: ").append(e.getMessage()).append("\n");
+            }catch(Exception e){
+                report.append("Error: ").append(e.getMessage()).append("\n");
             }
         }
 
-        // ================= MOVEMENT FORENSIC REPORT =================
-        if (caseImages.size() >= 2) {
+        if(movement.size()>=2)
+            report.append(generateMovement(movement));
 
-            report.append("\n=========== MOVEMENT FORENSIC REPORT ===========\n");
-
-            caseImages.sort(Comparator.comparing(i -> i.date));
-
-            ImageData a = caseImages.get(caseImages.size() - 2);
-            ImageData b = caseImages.get(caseImages.size() - 1);
-
-            double air = haversine(a.lat, a.lon, b.lat, b.lon);
-            double road = getRoadDistance(a.lat, a.lon, b.lat, b.lon);
-            double hours = Math.abs(b.date.getTime() - a.date.getTime()) / 3600000.0;
-            double speed = air / Math.max(hours, 1);
-
-            report.append("\nAIR TRAVEL ANALYSIS\n");
-            report.append("Geographic Distance: ").append(round(air)).append(" km\n");
-            report.append("Time Available: ").append(round(hours)).append(" hours\n");
-            report.append("Required Speed: ").append(round(speed)).append(" km/h\n");
-            report.append("Result: ").append(speed > 1000 ? "Impossible Movement" : "Physically Possible Movement").append("\n\n");
-
-            report.append("ROAD TRAVEL ANALYSIS\n");
-            report.append("Route Distance: ").append(round(road)).append(" km\n");
-            report.append("Estimated Daily Travel: ").append(round(road/(hours/24))).append(" km/day\n");
-            report.append("Result: ").append(speed > 150 ? "Suspicious Travel Behaviour" : "Realistic Travel Behaviour").append("\n\n");
-
-            report.append("FORENSIC DECISION\n");
-            report.append(speed > 1000 ? "GPS spoofing suspected" : "Trip continuity confirmed").append("\n");
-        }
-
+        lastReport=report.toString();
         return report.toString();
     }
 
-    // ================= UTIL METHODS =================
+    // ========================= MOVEMENT =========================
+    private String generateMovement(List<ImageData> list){
+        StringBuilder r=new StringBuilder("\n=========== MOVEMENT FORENSIC REPORT ===========\n");
 
-    private double round(double v){ return Math.round(v*100.0)/100.0; }
+        list.sort(Comparator.comparing(i->i.date));
+        ImageData a=list.get(0), b=list.get(list.size()-1);
 
-    private String classifyLocation(String address){
-        if(address==null)return"Unknown";
-        address=address.toLowerCase();
-        if(address.contains("college")||address.contains("school"))return"Institutional Area";
-        if(address.contains("mall")||address.contains("shop"))return"Commercial Area";
-        if(address.contains("street")||address.contains("residential"))return"Residential Area";
-        if(address.contains("airport")||address.contains("military")||address.contains("police"))return"Restricted Area";
-        return"General Area";
+        double hours=Math.abs(b.date.getTime()-a.date.getTime())/3600000.0;
+
+        double air=haversine(a.lat,a.lon,b.lat,b.lon);
+        double airSpeed=air/Math.max(hours,1);
+
+        r.append("\nAIR TRAVEL ANALYSIS\n");
+        r.append("Distance: ").append(round(air)).append(" km\n");
+        r.append("Time Gap: ").append(round(hours)).append(" hrs\n");
+        r.append("Speed: ").append(round(airSpeed)).append(" km/h\n");
+        r.append("Result: ").append(classifyMovement(airSpeed)).append("\n");
+
+        double road=getRoadDistance(a.lat,a.lon,b.lat,b.lon);
+        double roadSpeed=road>0?road/Math.max(hours,1):0;
+
+        r.append("\nROAD TRAVEL ANALYSIS\n");
+        r.append("Distance: ").append(round(road)).append(" km\n");
+        r.append("Speed: ").append(round(roadSpeed)).append(" km/h\n");
+        r.append("Result: ").append(classifyMovement(roadSpeed)).append("\n");
+
+        return r.toString();
     }
 
-    private String checkTimeConsistency(String s){
-        if(s==null)return"Unknown";
+    private String classifyMovement(double speed){
+        if(speed>900) return "Impossible Movement (Edited timestamps likely)";
+        if(speed>120) return "Vehicle / Flight Movement";
+        if(speed>15) return "Normal Human Travel";
+        return "Natural Movement";
+    }
+
+    // ========================= PDF =========================
+    @PostMapping("/downloadPdf")
+    public void downloadPdf(HttpServletResponse response) throws Exception {
+
+        response.setContentType("application/pdf");
+        response.setHeader("Content-Disposition","attachment; filename=forensic_report.pdf");
+
+        Document doc=new Document();
+        PdfWriter.getInstance(doc,response.getOutputStream());
+        doc.open();
+
+        for(String line:lastReport.split("\n"))
+            doc.add(new Paragraph(line));
+
+        doc.close();
+    }
+
+    // ========================= HELPERS =========================
+    private String reverseGeocode(double lat,double lon){
         try{
-            int h=Integer.parseInt(s.substring(11,13));
-            if(h>=5&&h<11)return"Morning Capture";
-            if(h>=11&&h<17)return"Afternoon Capture";
-            if(h>=17&&h<19)return"Evening Capture";
-            return"Night Capture";
-        }catch(Exception e){return"Unknown";}
+            String url="https://api.opencagedata.com/geocode/v1/json?q="+URLEncoder.encode(lat+","+lon,"UTF-8")+"&key="+OPENCAGE_KEY;
+            Map<?,?> json=new ObjectMapper().readValue(new URL(url),Map.class);
+            List<?> res=(List<?>)json.get("results");
+            if(!res.isEmpty()) return ((Map<?,?>)res.get(0)).get("formatted").toString();
+        }catch(Exception ignored){}
+        return "Unknown Location";
     }
 
-    private String recompressionCheck(Metadata m){
-        for(Directory d:m.getDirectories())
-            if(d.getName().contains("JPEG"))
-                return"Single Compression (Likely Original)";
-        return"Unknown Compression";
+    private String classifyLocation(String addr){
+        if(addr==null) return "Unknown";
+        addr=addr.toLowerCase();
+        if(addr.contains("college")||addr.contains("school")) return "Institutional Area";
+        if(addr.contains("airport")||addr.contains("military")) return "Restricted Area";
+        if(addr.contains("mall")||addr.contains("market")) return "Commercial Area";
+        if(addr.contains("street")||addr.contains("residential")) return "Residential Area";
+        return "General Area";
     }
 
-    private String calculateSHA256(File file)throws Exception{
-        MessageDigest digest=MessageDigest.getInstance("SHA-256");
-        FileInputStream fis=new FileInputStream(file);
-        byte[] buffer=new byte[1024];int n;
-        while((n=fis.read(buffer))>0)digest.update(buffer,0,n);
+    private String sha256(File f)throws Exception{
+        MessageDigest d=MessageDigest.getInstance("SHA-256");
+        FileInputStream fis=new FileInputStream(f);
+        byte[] b=new byte[1024]; int n;
+        while((n=fis.read(b))>0)d.update(b,0,n);
         fis.close();
-        StringBuilder sb=new StringBuilder();
-        for(byte b:digest.digest())sb.append(String.format("%02x",b));
-        return sb.toString();
+        StringBuilder s=new StringBuilder();
+        for(byte bb:d.digest())s.append(String.format("%02x",bb));
+        return s.toString();
     }
 
-    private double haversine(double lat1,double lon1,double lat2,double lon2){
+    private double haversine(double la1,double lo1,double la2,double lo2){
         final int R=6371;
-        double dLat=Math.toRadians(lat2-lat1);
-        double dLon=Math.toRadians(lon2-lon1);
-        double a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(Math.toRadians(lat1))*Math.cos(Math.toRadians(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+        double dLat=Math.toRadians(la2-la1), dLon=Math.toRadians(lo2-lo1);
+        double a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(Math.toRadians(la1))*Math.cos(Math.toRadians(la2))*Math.sin(dLon/2)*Math.sin(dLon/2);
         return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
     }
 
     private double getRoadDistance(double lat1,double lon1,double lat2,double lon2){
         try{
             String url="https://api.openrouteservice.org/v2/directions/driving-car?api_key="+ORS_API_KEY+"&start="+lon1+","+lat1+"&end="+lon2+","+lat2;
-            BufferedReader br=new BufferedReader(new InputStreamReader(new URL(url).openStream()));
-            String json=br.readLine();
-            int i=json.indexOf("\"distance\":");
-            int j=json.indexOf(",",i);
-            return Double.parseDouble(json.substring(i+11,j))/1000.0;
-        }catch(Exception e){return-1;}
+            Map<?,?> json=new ObjectMapper().readValue(new URL(url),Map.class);
+            Map<?,?> feature=(Map<?,?>)((List<?>)json.get("features")).get(0);
+            Map<?,?> summary=(Map<?,?>)((Map<?,?>)feature.get("properties")).get("summary");
+            return ((Number)summary.get("distance")).doubleValue()/1000.0;
+        }catch(Exception e){return -1;}
     }
 
-    private String reverseGeocode(double lat,double lon){
-        try{
-            String url="https://api.opencagedata.com/geocode/v1/json?q="+URLEncoder.encode(lat+","+lon,"UTF-8")+"&key="+OPENCAGE_KEY+"&limit=1";
-            Map<?,?> json=new ObjectMapper().readValue(new URL(url),Map.class);
-            List<?> res=(List<?>)json.get("results");
-            if(!res.isEmpty())return((Map<?,?>)res.get(0)).get("formatted").toString();
-        }catch(Exception ignored){}
-        return"Unknown Location";
-    }
+    private double round(double v){ return Math.round(v*100.0)/100.0; }
 
     static class ImageData{
-        String name;Date date;double lat,lon;
-        ImageData(String n,Date d,double la,double lo){name=n;date=d;lat=la;lon=lo;}
+        Date date; double lat,lon;
+        ImageData(Date d,double la,double lo){date=d;lat=la;lon=lo;}
     }
 }
