@@ -8,72 +8,116 @@
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
     <style>
-        body{
-            background:#0b1e2d;
-            color:white;
-            font-family:Arial;
-            text-align:center;
-        }
-        .container{ width:90%; margin:auto; }
 
-        .upload-box{
-            border:2px dashed #00d9ff;
+        body{
+            margin:0;
+            font-family:'Segoe UI',sans-serif;
+            background:linear-gradient(135deg,#081c2d,#0e2a40);
+            color:white;
+        }
+
+        .container{
+            width:95%;
+            margin:auto;
             padding:20px;
-            margin:20px auto;
-            width:450px;
-            border-radius:10px;
+        }
+
+        h1{
+            text-align:center;
+            margin-bottom:20px;
+        }
+
+        .form-section{
+            background:#102c44;
+            padding:20px;
+            border-radius:12px;
+            box-shadow:0 0 20px rgba(0,217,255,0.3);
+            margin-bottom:20px;
+        }
+
+        input, select{
+            padding:8px;
+            margin:5px;
+            border-radius:6px;
+            border:none;
+            width:220px;
         }
 
         button{
-            background:#19c37d;
+            background:linear-gradient(45deg,#19c37d,#00d9ff);
             border:none;
             padding:10px 15px;
             margin:5px;
-            border-radius:6px;
+            border-radius:8px;
             color:white;
             font-weight:bold;
             cursor:pointer;
+            transition:0.3s;
         }
-        button:hover{ background:#13a46a; }
+
+        button:hover{
+            transform:scale(1.05);
+            box-shadow:0 0 10px #00d9ff;
+        }
 
         table{
-            width:95%;
-            margin:20px auto;
+            width:100%;
             border-collapse:collapse;
+            margin-top:20px;
+            background:#0f2a40;
         }
+
         th,td{
             border:1px solid #00d9ff;
-            padding:8px;
+            padding:10px;
         }
-        th{ background:#072d44; }
 
-        #map{ height:400px; margin-top:20px; }
+        th{
+            background:#072d44;
+        }
+
+        #map{
+            height:400px;
+            margin-top:20px;
+            border-radius:10px;
+        }
 
         .loading{
             color:#00ffd0;
             font-weight:bold;
         }
 
-        /* MODAL */
         .modal{
             display:none;
             position:fixed;
-            top:10%;
-            left:10%;
-            width:80%;
-            height:70%;
-            background:#061420;
-            border:2px solid #00d9ff;
+            top:5%;
+            left:5%;
+            width:90%;
+            height:85%;
+            background:white;
+            color:black;
+            border-radius:12px;
             overflow:auto;
             padding:20px;
             z-index:9999;
-            text-align:left;
+            box-shadow:0 0 25px rgba(0,0,0,0.8);
         }
+
         .close-btn{
             float:right;
             background:red;
-            padding:5px 10px;
+            border:none;
+            color:white;
+            padding:6px 12px;
+            border-radius:6px;
         }
+
+        #metadataContent{
+            font-family:Consolas;
+            font-size:14px;
+            color:#222;
+        }
+
     </style>
 </head>
 
@@ -82,12 +126,20 @@
 
     <h1>🔍 MetaExtract Digital Forensic Tool</h1>
 
-    <div class="upload-box">
+    <div class="form-section">
 
-        <input type="file" id="files" multiple>
+        <input type="text" id="caseNo" placeholder="Example: CASE-2026-045">
+        <input type="text" id="officer" placeholder="Example: Inspector Giri">
+        <input type="text" id="department" placeholder="Example: Cyber Crime Division">
+
         <br><br>
 
-        <button id="analyzeBtn">Analyze</button>
+        <input type="file" id="files" multiple>
+
+        <br><br>
+
+        <button id="analyzeBtn">Analyze Images</button>
+        <button id="movementBtn">Analyze Movement</button>
 
         <select id="reportType">
             <option value="court">Court Investigation Report</option>
@@ -102,8 +154,6 @@
         </p>
 
     </div>
-
-    <div id="movement"></div>
 
     <table id="resultTable">
         <thead>
@@ -126,9 +176,10 @@
 <!-- METADATA MODAL -->
 <div id="metadataModal" class="modal">
     <button class="close-btn" onclick="closeModal()">Close</button>
-    <pre id="metadataContent"></pre>
+    <div id="metadataContent"></div>
 </div>
 
 <script src="/script.js"></script>
+
 </body>
 </html>

@@ -56,3 +56,8 @@ textarea {
 .hidden {
     display: none;
 }
+#metadataContent span{
+    display:block;
+    margin-bottom:4px;
+    font-size:14px;
+}

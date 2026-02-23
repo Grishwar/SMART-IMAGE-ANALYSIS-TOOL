@@ -1,3 +1,4 @@
+
 package com.example.metaextract;
 
 import org.springframework.context.annotation.Bean;
@@ -16,4 +17,3 @@ public class WebConfig {
         };
     }
 }
-
