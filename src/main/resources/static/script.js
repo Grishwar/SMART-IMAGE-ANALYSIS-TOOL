@@ -168,9 +168,12 @@ function getLine(text,label){
 }
 
 function formatMetadata(text){
-    let fields=["File:","SHA256:","Capture Time:","Camera:","Latitude:","Longitude:","Location:",
-    "Area Classification:","Risk Score:","Authenticity Score:","Status:","File Size:",
-    "Dimensions:","GPS Present:","AIR DISTANCE:","ROAD DISTANCE:","AVG SPEED:","MOVEMENT TYPE:","Time Gap:"];
+   let fields=["File:","SHA256:","Capture Time:","Camera:","Latitude:","Longitude:","Location:",
+   "Area Classification:","Risk Score:","Authenticity Score:","Status:","File Size:",
+   "Dimensions:","GPS Present:","Software Tag:","MakerNote Present:","Thumbnail DateTime:",
+   "Thumbnail Date Match:","File Creation Date:","File Modified Date:","Megapixels",
+   "EXIF Timezone Offset:","Expected Timezone","Total Suspicion Indicators:",
+   "No tampering indicators","AIR DISTANCE:","ROAD DISTANCE:","AVG SPEED:","MOVEMENT TYPE:","Time Gap:"];
     let out="";
     text.split("\n").forEach(l=>{
         fields.forEach(f=>{
