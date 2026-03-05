@@ -3,183 +3,95 @@
 <head>
     <meta charset="UTF-8">
     <title>MetaExtract Digital Forensic Tool</title>
-
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-
     <style>
-
-        body{
-            margin:0;
-            font-family:'Segoe UI',sans-serif;
-            background:linear-gradient(135deg,#081c2d,#0e2a40);
-            color:white;
-        }
-
-        .container{
-            width:95%;
-            margin:auto;
-            padding:20px;
-        }
-
-        h1{
-            text-align:center;
-            margin-bottom:20px;
-        }
-
-        .form-section{
-            background:#102c44;
-            padding:20px;
-            border-radius:12px;
-            box-shadow:0 0 20px rgba(0,217,255,0.3);
-            margin-bottom:20px;
-        }
-
-        input, select{
-            padding:8px;
-            margin:5px;
-            border-radius:6px;
-            border:none;
-            width:220px;
-        }
-
-        button{
-            background:linear-gradient(45deg,#19c37d,#00d9ff);
-            border:none;
-            padding:10px 15px;
-            margin:5px;
-            border-radius:8px;
-            color:white;
-            font-weight:bold;
-            cursor:pointer;
-            transition:0.3s;
-        }
-
-        button:hover{
-            transform:scale(1.05);
-            box-shadow:0 0 10px #00d9ff;
-        }
-
-        table{
-            width:100%;
-            border-collapse:collapse;
-            margin-top:20px;
-            background:#0f2a40;
-        }
-
-        th,td{
-            border:1px solid #00d9ff;
-            padding:10px;
-        }
-
-        th{
-            background:#072d44;
-        }
-
-        #map{
-            height:400px;
-            margin-top:20px;
-            border-radius:10px;
-        }
-
-        .loading{
-            color:#00ffd0;
-            font-weight:bold;
-        }
-
-        .modal{
-            display:none;
-            position:fixed;
-            top:5%;
-            left:5%;
-            width:90%;
-            height:85%;
-            background:white;
-            color:black;
-            border-radius:12px;
-            overflow:auto;
-            padding:20px;
-            z-index:9999;
-            box-shadow:0 0 25px rgba(0,0,0,0.8);
-        }
-
-        .close-btn{
-            float:right;
-            background:red;
-            border:none;
-            color:white;
-            padding:6px 12px;
-            border-radius:6px;
-        }
-
-        #metadataContent{
-            font-family:Consolas;
-            font-size:14px;
-            color:#222;
-        }
-
+        body{ margin:0; font-family:Segoe UI,sans-serif; background:linear-gradient(135deg,#081c2d,#0e2a40); color:white; }
+        .container{ width:95%; margin:auto; padding:20px; }
+        h1{ text-align:center; margin-bottom:20px; }
+        .form-section{ background:#102c44; padding:20px; border-radius:12px; box-shadow:0 0 20px rgba(0,217,255,0.3); margin-bottom:20px; }
+        input, select{ padding:8px; margin:5px; border-radius:6px; border:none; width:220px; }
+        button{ background:linear-gradient(45deg,#19c37d,#00d9ff); border:none; padding:10px 15px; margin:5px; border-radius:8px; color:white; font-weight:bold; cursor:pointer; transition:0.3s; }
+        button:hover{ transform:scale(1.05); box-shadow:0 0 10px #00d9ff; }
+        table{ width:100%; border-collapse:collapse; margin-top:20px; background:#0f2a40; }
+        th,td{ border:1px solid #00d9ff; padding:10px; }
+        th{ background:#072d44; }
+        #map{ height:400px; margin-top:20px; border-radius:10px; }
+        .loading{ color:#00ffd0; font-weight:bold; }
+        .modal{ display:none; position:fixed; top:5%; left:5%; width:90%; height:85%; background:white; color:black; border-radius:12px; overflow:auto; padding:20px; z-index:9999; box-shadow:0 0 25px rgba(0,0,0,0.8); }
+        .close-btn{ float:right; background:red; border:none; color:white; padding:6px 12px; border-radius:6px; cursor:pointer; }
+        #metadataContent{ font-family:Consolas; font-size:14px; color:#222; }
+        #elaSection{ margin-top:20px; text-align:center; }
+        #elaSection h3{ color:#333; margin-bottom:10px; }
+        #elaImage{ max-width:100%; border:3px solid #ff4444; border-radius:8px; }
+        .ela-legend{ display:flex; justify-content:center; gap:20px; margin-top:10px; font-family:Consolas; font-size:13px; }
+        .ela-legend span{ padding:4px 12px; border-radius:4px; font-weight:bold; }
+        #aiSection{ margin-top:20px; padding:20px; background:#f0f4ff; border-radius:10px; border-left:5px solid #7b2ff7; }
+        #aiSection h3{ color:#7b2ff7; margin-top:0; }
+        #aiSummaryText{ font-family:Georgia,serif; font-size:15px; color:#222; line-height:1.8; white-space:pre-wrap; }
+        .ai-badge{ display:inline-block; background:linear-gradient(45deg,#7b2ff7,#00d9ff); color:white; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:bold; margin-bottom:10px; }
     </style>
 </head>
-
 <body>
 <div class="container">
-
-    <h1>🔍 MetaExtract Digital Forensic Tool</h1>
-
+    <h1>MetaExtract Digital Forensic Tool</h1>
     <div class="form-section">
-
         <input type="text" id="caseNo" placeholder="Example: CASE-2026-045">
         <input type="text" id="officer" placeholder="Example: Inspector Giri">
         <input type="text" id="department" placeholder="Example: Cyber Crime Division">
-
         <br><br>
-
         <input type="file" id="files" multiple>
-
         <br><br>
-
         <button id="analyzeBtn">Analyze Images</button>
         <button id="movementBtn">Analyze Movement</button>
-
         <select id="reportType">
             <option value="court">Court Investigation Report</option>
             <option value="full">Full Metadata Report</option>
         </select>
-
         <button id="pdfBtn">Download PDF</button>
         <button id="routeBtn" style="display:none;">Open Route</button>
-
-        <p id="loading" class="loading" style="display:none;">
-            Analyzing... Please wait ⏳
-        </p>
-
+        <p id="loading" class="loading" style="display:none;">Analyzing... Please wait</p>
     </div>
-
     <table id="resultTable">
         <thead>
         <tr>
-            <th>File</th>
-            <th>Risk</th>
-            <th>Authenticity</th>
-            <th>Status</th>
-            <th>Location</th>
-            <th>Details</th>
+            <th style="width:150px">Preview & File</th><th>Risk</th><th>Authenticity</th><th>Status</th>
+            <th>Location</th><th>ELA Result</th><th>Details</th>
         </tr>
         </thead>
         <tbody></tbody>
     </table>
-
     <div id="map"></div>
-
 </div>
 
-<!-- METADATA MODAL -->
+<!-- MODAL -->
 <div id="metadataModal" class="modal">
     <button class="close-btn" onclick="closeModal()">Close</button>
+    <h3 id="modalTitle" style="color:#333;margin-top:0"></h3>
+
+    <!-- Metadata content -->
     <div id="metadataContent"></div>
+
+    <!-- ELA Section -->
+    <div id="elaSection" style="display:none;">
+        <h3>ELA Heatmap - Bright/Red = Possibly Tampered</h3>
+        <img id="elaImage" src="" alt="ELA Analysis Image"/>
+        <div class="ela-legend">
+            <span style="background:#ff4444;color:white">RED = HIGH = Tampered</span>
+            <span style="background:#ffaa00;color:white">YELLOW = MEDIUM = Suspicious</span>
+            <span style="background:#00aa44;color:white">GREEN = LOW = Original</span>
+            <span style="background:#111111;color:white">BLACK = VERY LOW = Genuine</span>
+        </div>
+    </div>
+
+    <!-- AI Summary Section -->
+    <div id="aiSection" style="display:none;">
+        <span class="ai-badge">Powered by Claude AI</span>
+        <h3>AI Forensic Verdict</h3>
+        <div id="aiSummaryText">Loading...</div>
+    </div>
 </div>
 
 <script src="/script.js"></script>
-
 </body>
 </html>

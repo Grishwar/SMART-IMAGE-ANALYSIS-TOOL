@@ -1,25 +1,37 @@
 package com.example.metaextract;
 
+import java.awt.Color;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
-import java.nio.file.Files;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.TimeZone;
+import java.util.Base64;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import jakarta.servlet.http.HttpServletResponse;
+
+import javax.imageio.ImageIO;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -37,6 +49,8 @@ import com.drew.metadata.exif.GpsDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.lowagie.text.Document;
+import com.lowagie.text.Font;
+import com.lowagie.text.FontFactory;
 import com.lowagie.text.Paragraph;
 import com.lowagie.text.pdf.PdfWriter;
 
@@ -49,8 +63,12 @@ public class FileUploadController {
     private static final String OPENCAGE_KEY = "312be13fa1b24a149fa1318378e54095";
     private static final String ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjZkMTk5MzEwY2YyNDQxMGY5NDljMDI4M2UwZWQ4ZjkyIiwiaCI6Im11cm11cjY0In0=";
 
+    // ===== GROQ API KEY =====
+    private static final String GROQ_API_KEY = "INSERT_YOUR_API_KEY";
+
     private String lastFullReport = "";
-    private String lastCourtReport = "";
+    // Store AI summaries per file for PDF use
+    private Map<String, String> aiSummaryStore = new HashMap<>();
 
     // ========================= ANALYZE =========================
     @PostMapping("/analyze")
@@ -64,6 +82,7 @@ public class FileUploadController {
 
         List<ImageData> movement = new ArrayList<>();
         Set<String> hashes = new HashSet<>();
+        aiSummaryStore.clear();
 
         for (MultipartFile file : files) {
             try {
@@ -153,28 +172,18 @@ public class FileUploadController {
                 String model = camDir != null ? camDir.getString(ExifIFD0Directory.TAG_MODEL) : "Unknown";
                 report.append("Camera: ").append(make).append(" ").append(model).append("\n");
 
-                // ======================================================
-                // CHECK 1: SOFTWARE TAG
-                // Detects if ExifTool, Photoshop, GIMP etc. edited the file
-                // ======================================================
+                // -------- SOFTWARE TAG --------
                 String software = camDir != null ? camDir.getString(ExifIFD0Directory.TAG_SOFTWARE) : null;
                 report.append("Software Tag: ").append(software != null ? software : "Not Present").append("\n");
 
                 if (software != null) {
                     String sw = software.toLowerCase();
-
-                    boolean isGenuineCameraApp = sw.contains("mediatek") ||
-                            sw.contains("camera application") ||
-                            sw.contains("camera2") ||
-                            sw.contains("gcam") ||
-                            sw.contains("miui") ||
-                            sw.contains("samsung camera") ||
-                            sw.contains("pixel camera") ||
-                            sw.contains("iphone") ||
-                            sw.contains("apple");
+                    boolean isGenuineCameraApp = sw.contains("mediatek") || sw.contains("camera application") ||
+                            sw.contains("camera2") || sw.contains("gcam") || sw.contains("miui") ||
+                            sw.contains("samsung camera") || sw.contains("pixel camera") ||
+                            sw.contains("iphone") || sw.contains("apple");
 
                     if (isGenuineCameraApp) {
-                        risk += 0;
                         report.append("Software Note: " + software + " (Genuine camera app)\n");
                     } else if (sw.contains("exiftool")) {
                         risk += 40;
@@ -197,38 +206,28 @@ public class FileUploadController {
                     report.append("Software Note: Not present — metadata may have been stripped\n");
                 }
 
-                // ======================================================
-                // CHECK 2: THUMBNAIL DATE vs ORIGINAL DATE
-                // If someone edits the timestamp, thumbnail date often stays old
-                // ======================================================
+                // -------- THUMBNAIL CHECK --------
                 if (thumbDir != null && dateDir != null) {
                     String thumbDateTime = thumbDir.getString(ExifThumbnailDirectory.TAG_DATETIME);
                     String origDateTime = dateDir.getString(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL);
-
                     report.append("Thumbnail DateTime: ").append(thumbDateTime != null ? thumbDateTime : "Not Present").append("\n");
 
                     if (thumbDateTime != null && origDateTime != null) {
                         if (!thumbDateTime.trim().equals(origDateTime.trim())) {
                             risk += 35;
                             suspicions.add("THUMBNAIL DATE MISMATCH — Thumbnail shows (" + thumbDateTime +
-                                    ") but Original shows (" + origDateTime +
-                                    ") — strong sign of timestamp tampering");
+                                    ") but Original shows (" + origDateTime + ") — strong sign of timestamp tampering");
                         } else {
                             report.append("Thumbnail Date Match: YES (consistent)\n");
                         }
                     } else if (thumbDateTime == null && origDateTime != null) {
-                        // just report, don't add to suspicion list
                         report.append("Thumbnail Note: Missing — normal for Android devices\n");
                     }
                 } else {
                     report.append("Thumbnail DateTime: Not Available\n");
                 }
 
-                // ======================================================
-                // CHECK 3: MAKERNOTE CHECK
-                // Every real camera embeds a MakerNote. If camera brand is set
-                // but MakerNote is missing, model was likely faked.
-                // ======================================================
+                // -------- MAKERNOTE --------
                 boolean hasMakerNote = false;
                 for (Directory d : metadata.getDirectories()) {
                     String dirName = d.getName().toLowerCase();
@@ -238,23 +237,14 @@ public class FileUploadController {
                     }
                 }
                 report.append("MakerNote Present: ").append(hasMakerNote ? "YES" : "NO").append("\n");
-
                 if (!hasMakerNote && make != null && !make.equalsIgnoreCase("Unknown") && make.trim().length() > 0) {
-                    // just report, don't add to suspicion list or risk
                     report.append("MakerNote Note: Missing — may be lost during USB/ZIP transfer\n");
                 }
 
-                // ======================================================
-                // CHECK 4: FILE CREATION DATE vs CAPTURE DATE
-                // File created BEFORE capture = impossible = tampered
-                // File modified AFTER capture = re-saved after editing
-                // ======================================================// File creation/modified date not checked — always shows upload time, not original
+                // File creation removed — shows upload time only
                 report.append("File Creation Date: Not checked (shows server upload time only)\n");
 
-                // ======================================================
-                // CHECK 5: GPS vs TIMEZONE OFFSET CONSISTENCY
-                // If photo says +05:30 (India) but GPS shows USA — suspicious
-                // ======================================================
+                // -------- GPS --------
                 double lat = 0, lon = 0;
                 boolean hasGPS = false;
                 String location = "Unknown Location";
@@ -274,18 +264,15 @@ public class FileUploadController {
                             int exifOffsetMins = parseOffsetMinutes(offsetTimeOriginal);
                             int expectedOffsetMins = estimateTimezoneOffset(lat, lon);
                             int diff = Math.abs(exifOffsetMins - expectedOffsetMins);
-
                             report.append("EXIF Timezone Offset: ").append(offsetTimeOriginal).append("\n");
                             report.append("Expected Timezone (from GPS): UTC")
                                     .append(expectedOffsetMins >= 0 ? "+" : "")
                                     .append(expectedOffsetMins / 60).append("\n");
-
                             if (diff > 120) {
                                 risk += 30;
-                                suspicions.add("GPS location timezone does not match EXIF timezone offset (diff=" + diff + " mins) — GPS or timestamp may be faked");
+                                suspicions.add("GPS location timezone does not match EXIF timezone offset — GPS or timestamp may be faked");
                             }
                         }
-
                     } else {
                         risk += 20;
                         suspicions.add("GPS tag present but coordinates are zero — GPS data may have been wiped");
@@ -298,10 +285,7 @@ public class FileUploadController {
                 report.append("Location: ").append(location).append("\n");
                 report.append("Area Classification: ").append(classifyArea(location)).append("\n");
 
-                // ======================================================
-                // CHECK 6: CAMERA MODEL vs IMAGE RESOLUTION
-                // e.g. iPhone 6 claiming 50MP is suspicious
-                // ======================================================
+                // -------- DIMENSIONS --------
                 String dimStr = getDimensions(metadata);
                 report.append("Dimensions: ").append(dimStr).append("\n");
 
@@ -311,7 +295,6 @@ public class FileUploadController {
                     if (dims != null) {
                         long megapixels = ((long) dims[0] * dims[1]) / 1_000_000;
                         report.append("Megapixels (approx): ").append(megapixels).append(" MP\n");
-
                         boolean suspicious = false;
                         if (modelLower.contains("iphone 6") && megapixels > 20) suspicious = true;
                         if (modelLower.contains("iphone 7") && megapixels > 20) suspicious = true;
@@ -323,27 +306,42 @@ public class FileUploadController {
                         if (modelLower.contains("iphone 14") && megapixels > 25) suspicious = true;
                         if ((modelLower.contains("iphone") || modelLower.contains("samsung") ||
                                 modelLower.contains("pixel")) && megapixels < 2) suspicious = true;
-
                         if (suspicious) {
                             risk += 20;
-                            suspicions.add("Image resolution (" + megapixels + " MP) is inconsistent with camera model (" + model + ") — model name may be faked");
+                            suspicions.add("Image resolution (" + megapixels + " MP) inconsistent with model (" + model + ")");
                         }
                     }
                 }
 
-                // ======================================================
-                // AUTHENTICITY SCORE
-                // ======================================================
+                // -------- ELA --------
+                String elaResult = "Not Available";
+                try {
+                    elaResult = performELA(saved);
+                    report.append("ELA Result: ").append(elaResult).append("\n");
+                    String elaBase64 = generateELAImageBase64(saved);
+                    if (elaBase64 != null) {
+                        report.append("ELA_IMAGE_BASE64: ").append(elaBase64).append("\n");
+                        if (elaResult.contains("HIGH")) {
+                            risk += 30;
+                            suspicions.add("ELA analysis detected HIGH pixel inconsistency — image pixels may be altered");
+                        } else if (elaResult.contains("MEDIUM")) {
+                            risk += 15;
+                            suspicions.add("ELA analysis detected MEDIUM pixel inconsistency — possible minor editing");
+                        }
+                    }
+                } catch (Exception e) {
+                    report.append("ELA Result: Not Available\n");
+                }
+
+                // -------- AUTHENTICITY SCORE --------
                 int authenticity = Math.max(0, 100 - risk);
                 report.append("Risk Score: ").append(risk).append("\n");
                 report.append("Authenticity Score: ").append(authenticity).append("\n");
-                report.append(authenticity < 40 ? "Status: HIGHLY SUSPICIOUS\n" :
-                        authenticity < 70 ? "Status: Possibly Modified\n" :
-                                "Status: Likely Genuine\n");
+                String statusStr = authenticity < 40 ? "HIGHLY SUSPICIOUS" :
+                        authenticity < 70 ? "Possibly Modified" : "Likely Genuine";
+                report.append("Status: ").append(statusStr).append("\n");
 
-                // ======================================================
-                // TAMPERING SUSPICION SUMMARY
-                // ======================================================
+                // -------- TAMPERING SUSPICION --------
                 report.append("\n----- TAMPERING SUSPICION ANALYSIS -----\n");
                 if (suspicions.isEmpty()) {
                     report.append("No tampering indicators found.\n");
@@ -353,50 +351,43 @@ public class FileUploadController {
                         report.append("[").append(i + 1).append("] ").append(suspicions.get(i)).append("\n");
                     }
                 }
-                report.append("\n----- POSSIBLY MODIFIED FIELDS -----\n");
 
+                // -------- POSSIBLY MODIFIED FIELDS --------
+                report.append("\n----- POSSIBLY MODIFIED FIELDS -----\n");
+                boolean anyModified = false;
                 if (software != null) {
                     String sw = software.toLowerCase();
                     if (sw.contains("photoshop") || sw.contains("exiftool") ||
                             sw.contains("gimp") || sw.contains("lightroom")) {
-                        report.append("- date_time_original    : Possibly Modified\n");
-                        report.append("- create_date           : Possibly Modified\n");
-                        report.append("- modify_date           : Possibly Modified\n");
-                        report.append("- make                  : Possibly Fake\n");
-                        report.append("- model                 : Possibly Fake\n");
-                        report.append("- software              : Rewritten by " + software + "\n");
-                        report.append("- image_description     : Possibly Modified\n");
+                        report.append("- Image Content (Pixels)  : Possibly Modified\n");
+                        report.append("- Capture Date/Time       : Possibly Modified\n");
+                        report.append("- Camera Make/Model       : Possibly Fake\n");
+                        report.append("- GPS Location            : Possibly Modified\n");
+                        report.append("- Software Tag            : Rewritten by " + software + "\n");
+                        anyModified = true;
                     }
                 }
-
                 if (!hasMakerNote && make != null && !make.equalsIgnoreCase("Unknown")) {
-                    report.append("- make/model            : Possibly Fake (MakerNote absent)\n");
+                    report.append("- Camera Make/Model       : Possibly Fake (MakerNote absent)\n");
+                    anyModified = true;
+                }
+                if (!anyModified) {
+                    report.append("No specific fields identified as modified.\n");
                 }
 
-                if (thumbDir == null || thumbDir.getString(ExifThumbnailDirectory.TAG_DATETIME) == null) {
-                    report.append("- date_time_original    : Possibly Modified (Thumbnail date removed)\n");
-                    report.append("- create_date           : Possibly Modified\n");
-                }
+                // -------- AI SUMMARY --------
+                // Build forensic data string to send to Claude AI
+                String forensicData = buildForensicDataForAI(
+                        file.getOriginalFilename(), captureDateStr, make, model,
+                        software, location, hasGPS, lat, lon,
+                        risk, authenticity, statusStr, suspicions, elaResult
+                );
+                String aiSummary = generateAISummary(forensicData);
+                report.append("\n----- AI FORENSIC SUMMARY -----\n");
+                report.append(aiSummary).append("\n");
+                // Store for PDF use
+                aiSummaryStore.put(name, aiSummary);
 
-                if (hasGPS) {
-                    if (offsetTimeOriginal != null) {
-                        int exifOffsetMins = parseOffsetMinutes(offsetTimeOriginal);
-                        int expectedOffsetMins = estimateTimezoneOffset(lat, lon);
-                        int diff = Math.abs(exifOffsetMins - expectedOffsetMins);
-                        if (diff > 120) {
-                            report.append("- gps_latitude          : Possibly Fake\n");
-                            report.append("- gps_date_stamp        : Possibly Modified\n");
-                            report.append("- gps_time_stamp        : Possibly Modified\n");
-                            report.append("- gps_altitude          : Possibly Modified\n");
-                        }
-                    }
-                }
-
-                if (suspicions.size() >= 3) {
-                    report.append("- sub_sec_date_time_original : Possibly Modified\n");
-                    report.append("- sub_sec_create_date        : Possibly Modified\n");
-                    report.append("- sub_sec_modify_date        : Possibly Modified\n");
-                }
                 report.append("\n----- FORENSIC SUMMARY -----\n");
                 report.append("File Size: ").append(saved.length() / 1024).append(" KB\n");
                 report.append("GPS Present: ").append(hasGPS ? "YES" : "NO").append("\n");
@@ -414,9 +405,217 @@ public class FileUploadController {
             report.append(generateMovement(movement));
 
         lastFullReport = report.toString();
-        lastCourtReport = "DIGITAL COURT ADMISSIBLE FORENSIC REPORT\n\n" + lastFullReport;
-
         return lastFullReport;
+    }
+
+    // ======================================================
+    // AI SUMMARY — CLAUDE API
+    // ======================================================
+
+    /**
+     * Build a structured forensic data string to send to Claude AI
+     */
+    private String buildForensicDataForAI(String fileName, String captureTime,
+                                          String make, String model, String software,
+                                          String location, boolean hasGPS, double lat, double lon,
+                                          int risk, int authenticity, String status,
+                                          List<String> suspicions, String elaResult) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("File: ").append(fileName).append("\n");
+        sb.append("Capture Time: ").append(captureTime).append("\n");
+        sb.append("Camera: ").append(make).append(" ").append(model).append("\n");
+        sb.append("Software Tag: ").append(software != null ? software : "Not Present").append("\n");
+        sb.append("Location: ").append(location).append("\n");
+        sb.append("GPS Present: ").append(hasGPS ? "YES (Lat: " + lat + ", Lon: " + lon + ")" : "NO").append("\n");
+        sb.append("Risk Score: ").append(risk).append(" out of 100\n");
+        sb.append("Authenticity Score: ").append(authenticity).append(" out of 100\n");
+        sb.append("Overall Status: ").append(status).append("\n");
+        sb.append("ELA Pixel Analysis: ").append(elaResult).append("\n");
+        sb.append("Tampering Indicators Found: ").append(suspicions.size()).append("\n");
+        for (int i = 0; i < suspicions.size(); i++) {
+            sb.append("  - ").append(suspicions.get(i)).append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Call Groq API to generate plain English forensic summary
+     * Uses Llama 3.3 70B model — fast and accurate
+     */
+    private String generateAISummary(String forensicData) {
+        try {
+            String prompt = "You are a digital forensic expert writing a report for police officers and judges who are not technical.\n\n" +
+                    "Based on the following forensic analysis data, write a clear plain English summary paragraph (5-7 sentences) that:\n" +
+                    "1. States when and where the photo was taken\n" +
+                    "2. States what device was used\n" +
+                    "3. Explains if the image appears tampered or genuine in simple words\n" +
+                    "4. Mentions what specific things may have been modified\n" +
+                    "5. Gives a final verdict on whether this image is reliable as court evidence\n\n" +
+                    "Keep it simple, professional, and suitable for a court report.\n\n" +
+                    "FORENSIC DATA:\n" + forensicData;
+
+            // Build JSON request body for Groq API
+            String requestBody = "{"
+                    + "\"model\": \"llama-3.3-70b-versatile\","
+                    + "\"messages\": [{\"role\": \"user\", \"content\": " + toJson(prompt) + "}],"
+                    + "\"max_tokens\": 500,"
+                    + "\"temperature\": 0.3"
+                    + "}";
+
+            // Groq API endpoint
+            URL url = new URL("https://api.groq.com/openai/v1/chat/completions");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + GROQ_API_KEY);
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+
+            // Send request
+            OutputStream os = conn.getOutputStream();
+            os.write(requestBody.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
+
+            // Read response
+            int responseCode = conn.getResponseCode();
+            InputStream is = responseCode == 200 ? conn.getInputStream() : conn.getErrorStream();
+            byte[] bytes = is.readAllBytes();
+            String response = new String(bytes, StandardCharsets.UTF_8);
+            is.close();
+
+            if (responseCode == 200) {
+                // Parse Groq response JSON
+                // Response structure: choices[0].message.content
+                Map<?, ?> json = new ObjectMapper().readValue(response, Map.class);
+                List<?> choices = (List<?>) json.get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+                    Map<?, ?> message = (Map<?, ?>) choice.get("message");
+                    return message.get("content").toString().trim();
+                }
+            }
+
+            return "AI Summary not available — API response code: " + responseCode;
+
+        } catch (Exception e) {
+            return "AI Summary not available — " + e.getMessage();
+        }
+    }
+
+    /**
+     * Simple JSON string escaping
+     */
+    private String toJson(String text) {
+        return "\"" + text
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+                + "\"";
+    }
+
+    // ======================================================
+    // AI SUMMARY ENDPOINT — for button in UI
+    // ======================================================
+    @PostMapping("/aiSummary")
+    public String getAiSummary(@RequestParam("fileName") String fileName) {
+        String summary = aiSummaryStore.get(fileName);
+        if (summary != null && !summary.isEmpty()) {
+            return summary;
+        }
+        return "AI Summary not available. Please analyze the image first.";
+    }
+
+    // ======================================================
+    // ELA METHODS
+    // ======================================================
+
+    private String performELA(File imageFile) throws Exception {
+        BufferedImage original = ImageIO.read(imageFile);
+        if (original == null) return "Not Available (unsupported format)";
+
+        BufferedImage recompressed = recompressImage(original, 0.95f);
+
+        int width = Math.min(original.getWidth(), recompressed.getWidth());
+        int height = Math.min(original.getHeight(), recompressed.getHeight());
+
+        long totalDiff = 0;
+        long highDiffPixels = 0;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                Color c1 = new Color(original.getRGB(x, y));
+                Color c2 = new Color(recompressed.getRGB(x, y));
+                int diff = Math.abs(c1.getRed() - c2.getRed()) +
+                        Math.abs(c1.getGreen() - c2.getGreen()) +
+                        Math.abs(c1.getBlue() - c2.getBlue());
+                totalDiff += diff;
+                if (diff > 15) highDiffPixels++;
+            }
+        }
+
+        long totalPixels = (long) width * height;
+        double avgDiff = (double) totalDiff / (totalPixels * 3);
+        double highDiffPercent = (double) highDiffPixels / totalPixels * 100;
+
+        String level;
+        if (highDiffPercent > 8 || avgDiff > 12) level = "HIGH";
+        else if (highDiffPercent > 3 || avgDiff > 6) level = "MEDIUM";
+        else level = "LOW";
+
+        return level + " (Avg pixel diff: " + String.format("%.2f", avgDiff) +
+                ", Suspicious pixels: " + String.format("%.2f", highDiffPercent) + "%)";
+    }
+
+    private String generateELAImageBase64(File imageFile) throws Exception {
+        BufferedImage original = ImageIO.read(imageFile);
+        if (original == null) return null;
+
+        BufferedImage recompressed = recompressImage(original, 0.95f);
+
+        int width = Math.min(original.getWidth(), recompressed.getWidth());
+        int height = Math.min(original.getHeight(), recompressed.getHeight());
+
+        int displayWidth = Math.min(width, 800);
+        int displayHeight = (int) ((double) height / width * displayWidth);
+
+        BufferedImage elaImage = new BufferedImage(displayWidth, displayHeight, BufferedImage.TYPE_INT_RGB);
+        double scaleX = (double) width / displayWidth;
+        double scaleY = (double) height / displayHeight;
+
+        for (int y = 0; y < displayHeight; y++) {
+            for (int x = 0; x < displayWidth; x++) {
+                int srcX = (int) (x * scaleX);
+                int srcY = (int) (y * scaleY);
+                Color c1 = new Color(original.getRGB(srcX, srcY));
+                Color c2 = new Color(recompressed.getRGB(srcX, srcY));
+                int r = Math.min(255, Math.abs(c1.getRed() - c2.getRed()) * 20);
+                int g = Math.min(255, Math.abs(c1.getGreen() - c2.getGreen()) * 20);
+                int b = Math.min(255, Math.abs(c1.getBlue() - c2.getBlue()) * 20);
+                elaImage.setRGB(x, y, new Color(r, g, b).getRGB());
+            }
+        }
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(elaImage, "png", baos);
+        return Base64.getEncoder().encodeToString(baos.toByteArray());
+    }
+
+    private BufferedImage recompressImage(BufferedImage original, float quality) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+        ImageWriteParam param = writer.getDefaultWriteParam();
+        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        param.setCompressionQuality(quality);
+        writer.setOutput(new MemoryCacheImageOutputStream(baos));
+        BufferedImage rgbImage = new BufferedImage(original.getWidth(), original.getHeight(), BufferedImage.TYPE_INT_RGB);
+        rgbImage.createGraphics().drawImage(original, 0, 0, Color.WHITE, null);
+        writer.write(null, new IIOImage(rgbImage, null, null), param);
+        writer.dispose();
+        return ImageIO.read(new java.io.ByteArrayInputStream(baos.toByteArray()));
     }
 
     // ================= TIMESTAMP HELPERS =================
@@ -427,9 +626,7 @@ public class FileUploadController {
             offset = offset.trim();
             if (offset.equalsIgnoreCase("Z")) return TimeZone.getTimeZone("UTC");
             return TimeZone.getTimeZone("GMT" + offset);
-        } catch (Exception e) {
-            return TimeZone.getDefault();
-        }
+        } catch (Exception e) { return TimeZone.getDefault(); }
     }
 
     private Date parseExifDateTime(String raw) {
@@ -437,9 +634,7 @@ public class FileUploadController {
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss");
             sdf.setTimeZone(TimeZone.getDefault());
             return sdf.parse(raw);
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 
     private String formatDateLocal(String raw) {
@@ -450,12 +645,8 @@ public class FileUploadController {
             SimpleDateFormat outFmt = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss a");
             outFmt.setTimeZone(TimeZone.getDefault());
             return outFmt.format(d);
-        } catch (Exception e) {
-            return raw;
-        }
+        } catch (Exception e) { return raw; }
     }
-
-    // ================= NEW HELPERS =================
 
     private int parseOffsetMinutes(String offset) {
         try {
@@ -466,18 +657,12 @@ public class FileUploadController {
             int hours = Integer.parseInt(parts[0]);
             int mins = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
             return sign * (hours * 60 + mins);
-        } catch (Exception e) {
-            return 0;
-        }
+        } catch (Exception e) { return 0; }
     }
 
-    // Rough UTC offset from longitude (15 degrees = 1 hour)
     private int estimateTimezoneOffset(double lat, double lon) {
-        try {
-            return (int) (lon / 15.0) * 60;
-        } catch (Exception e) {
-            return Integer.MIN_VALUE;
-        }
+        try { return (int) (lon / 15.0) * 60; }
+        catch (Exception e) { return Integer.MIN_VALUE; }
     }
 
     private int[] parseDimensions(String dimStr) {
@@ -492,29 +677,21 @@ public class FileUploadController {
                 int w = Integer.parseInt(dimStr.replaceAll("[^0-9]", "").trim());
                 return new int[]{w, w};
             }
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 
     // ================= MOVEMENT =================
 
     private String generateMovement(List<ImageData> list) {
-
         list.sort(Comparator.comparing((ImageData i) -> i.date));
-
         ImageData a = list.get(0);
         ImageData b = list.get(list.size() - 1);
-
         double hours = Math.abs(b.date.getTime() - a.date.getTime()) / 3600000.0;
         double days = hours / 24.0;
-
         double air = haversine(a.lat, a.lon, b.lat, b.lon);
         double road = getRoadDistance(a.lat, a.lon, b.lat, b.lon);
         double speed = road / Math.max(hours, 1);
-
         StringBuilder r = new StringBuilder("\n=========== MOVEMENT FORENSIC REPORT ===========\n");
-
         r.append("FROM: ").append(a.date).append("\n");
         r.append("TO: ").append(b.date).append("\n");
         r.append("Time Gap: ").append(round(hours)).append(" hrs (").append(round(days)).append(" days)\n\n");
@@ -522,7 +699,6 @@ public class FileUploadController {
         r.append("ROAD DISTANCE: ").append(round(road)).append(" km\n");
         r.append("AVG SPEED: ").append(round(speed)).append(" km/h\n");
         r.append("MOVEMENT TYPE: ").append(classifyMovement(speed)).append("\n");
-
         return r.toString();
     }
 
@@ -530,16 +706,11 @@ public class FileUploadController {
         try {
             String url = "https://api.openrouteservice.org/v2/directions/driving-car?api_key=" + ORS_KEY +
                     "&start=" + lon1 + "," + lat1 + "&end=" + lon2 + "," + lat2;
-
             Map<?, ?> json = new ObjectMapper().readValue(new URL(url), Map.class);
             Map<?, ?> feature = (Map<?, ?>) ((List<?>) json.get("features")).get(0);
             Map<?, ?> summary = (Map<?, ?>) ((Map<?, ?>) feature.get("properties")).get("summary");
-
             return ((Number) summary.get("distance")).doubleValue() / 1000.0;
-
-        } catch (Exception e) {
-            return 0;
-        }
+        } catch (Exception e) { return 0; }
     }
 
     // ================= PDF GENERATION =================
@@ -552,85 +723,86 @@ public class FileUploadController {
                             HttpServletResponse response) throws Exception {
 
         response.setContentType("application/pdf");
-
-        String fileName = type.equals("court") ?
-                "Court_Investigation_Report.pdf" :
-                "Full_Metadata_Report.pdf";
-
-        response.setHeader("Content-Disposition",
-                "attachment; filename=" + fileName);
+        String fileName = type.equals("court") ? "Court_Investigation_Report.pdf" : "Full_Metadata_Report.pdf";
+        response.setHeader("Content-Disposition", "attachment; filename=" + fileName);
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         Document document = new Document();
         PdfWriter.getInstance(document, baos);
         document.open();
 
-        if (type.equals("court")) {
+        Font titleFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 14);
+        Font normalFont = FontFactory.getFont(FontFactory.HELVETICA, 11);
+        Font aiFont = FontFactory.getFont(FontFactory.HELVETICA, 11);
 
-            document.add(new Paragraph("DIGITAL FORENSIC COURT EVIDENCE REPORT"));
-            document.add(new Paragraph("------------------------------------------------------------"));
-            document.add(new Paragraph("Case Number: " + safe(caseNo)));
-            document.add(new Paragraph("Investigating Officer: " + safe(officer)));
-            document.add(new Paragraph("Department: " + safe(department)));
-            document.add(new Paragraph("Report Generated On: " + new Date()));
+        if (type.equals("court")) {
+            document.add(new Paragraph("DIGITAL FORENSIC COURT EVIDENCE REPORT", titleFont));
+            document.add(new Paragraph("------------------------------------------------------------", normalFont));
+            document.add(new Paragraph("Case Number: " + safe(caseNo), normalFont));
+            document.add(new Paragraph("Investigating Officer: " + safe(officer), normalFont));
+            document.add(new Paragraph("Department: " + safe(department), normalFont));
+            document.add(new Paragraph("Report Generated On: " + new Date(), normalFont));
             document.add(new Paragraph("\n"));
 
-            document.add(new Paragraph("EVIDENCE SUMMARY"));
-            document.add(new Paragraph("------------------------------------------------------------"));
+            // ===== AI SUMMARY SECTION IN PDF =====
+            if (!aiSummaryStore.isEmpty()) {
+                document.add(new Paragraph("AI FORENSIC VERDICT", titleFont));
+                document.add(new Paragraph("------------------------------------------------------------", normalFont));
+                document.add(new Paragraph("The following verdicts were generated by the AI Forensic Engine based on forensic analysis:"));
+                document.add(new Paragraph("\n"));
+                for (Map.Entry<String, String> entry : aiSummaryStore.entrySet()) {
+                    document.add(new Paragraph("File: " + entry.getKey(), FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10)));
+                    document.add(new Paragraph(entry.getValue(), aiFont));
+                    document.add(new Paragraph("\n"));
+                }
+                document.add(new Paragraph("------------------------------------------------------------", normalFont));
+                document.add(new Paragraph("\n"));
+            }
+
+            document.add(new Paragraph("EVIDENCE SUMMARY", titleFont));
+            document.add(new Paragraph("------------------------------------------------------------", normalFont));
             document.add(new Paragraph("\n"));
 
             for (String line : lastFullReport.split("\n")) {
-                if (line.contains("File:") ||
-                        line.contains("SHA256:") ||
-                        line.contains("Capture Time:") ||
-                        line.contains("Location:") ||
-                        line.contains("Area Classification:") ||
-                        line.contains("Risk Score:") ||
-                        line.contains("Authenticity Score:") ||
-                        line.contains("Status:") ||
-                        line.contains("Software Tag:") ||
-                        line.contains("MakerNote Present:") ||
-                        line.contains("Thumbnail DateTime:") ||
-                        line.contains("Thumbnail Date Match:") ||
-                        line.contains("File Creation Date:") ||
-                        line.contains("File Modified Date:") ||
-                        line.contains("Megapixels") ||
-                        line.contains("EXIF Timezone") ||
-                        line.contains("Expected Timezone") ||
-                        line.contains("Total Suspicion") ||
-                        line.startsWith("[") ||
-                        line.contains("No tampering indicators") ||
-                        line.contains("AIR DISTANCE:") ||
-                        line.contains("ROAD DISTANCE:") ||
-                        line.contains("AVG SPEED:") ||
-                        line.contains("MOVEMENT TYPE:") ||
-                        line.contains("Time Gap:") ||
-                        line.contains("TAMPERING SUSPICION"))
-                {
-                    document.add(new Paragraph(line));
+                if (line.contains("File:") || line.contains("SHA256:") ||
+                        line.contains("Capture Time:") || line.contains("Location:") ||
+                        line.contains("Area Classification:") || line.contains("Risk Score:") ||
+                        line.contains("Authenticity Score:") || line.contains("Status:") ||
+                        line.contains("Software Tag:") || line.contains("MakerNote Present:") ||
+                        line.contains("Thumbnail DateTime:") || line.contains("Thumbnail Date Match:") ||
+                        line.contains("Megapixels") || line.contains("EXIF Timezone") ||
+                        line.contains("Expected Timezone") || line.contains("Total Suspicion") ||
+                        line.startsWith("[") || line.contains("No tampering indicators") ||
+                        line.contains("ELA Result:") ||
+                        line.contains("POSSIBLY MODIFIED") || line.startsWith("- ") ||
+                        line.contains("AIR DISTANCE:") || line.contains("ROAD DISTANCE:") ||
+                        line.contains("AVG SPEED:") || line.contains("MOVEMENT TYPE:") ||
+                        line.contains("Time Gap:") || line.contains("TAMPERING SUSPICION")) {
+                    if (!line.startsWith("ELA_IMAGE_BASE64:") && !line.contains("AI FORENSIC SUMMARY")) {
+                        document.add(new Paragraph(line, normalFont));
+                    }
                 }
             }
 
             document.add(new Paragraph("\n"));
-            document.add(new Paragraph("DECLARATION"));
-            document.add(new Paragraph("------------------------------------------------------------"));
-            document.add(new Paragraph(
-                    "I hereby certify that the above digital evidence was analyzed " +
-                            "using MetaExtract Digital Forensic Engine and the findings " +
-                            "are true to the best of my knowledge."));
+            document.add(new Paragraph("DECLARATION", titleFont));
+            document.add(new Paragraph("------------------------------------------------------------", normalFont));
+            document.add(new Paragraph("I hereby certify that the above digital evidence was analyzed " +
+                    "using MetaExtract Digital Forensic Engine and the findings " +
+                    "are true to the best of my knowledge.", normalFont));
             document.add(new Paragraph("\n"));
-            document.add(new Paragraph("Signature: __________________________"));
-            document.add(new Paragraph("Date: _______________________________"));
+            document.add(new Paragraph("Signature: __________________________", normalFont));
+            document.add(new Paragraph("Date: _______________________________", normalFont));
 
         } else {
-
-            document.add(new Paragraph("FULL DIGITAL FORENSIC METADATA REPORT"));
-            document.add(new Paragraph("------------------------------------------------------------"));
-            document.add(new Paragraph("Generated On: " + new Date()));
+            document.add(new Paragraph("FULL DIGITAL FORENSIC METADATA REPORT", titleFont));
+            document.add(new Paragraph("------------------------------------------------------------", normalFont));
+            document.add(new Paragraph("Generated On: " + new Date(), normalFont));
             document.add(new Paragraph("\n"));
-
             for (String line : lastFullReport.split("\n")) {
-                document.add(new Paragraph(line));
+                if (!line.startsWith("ELA_IMAGE_BASE64:")) {
+                    document.add(new Paragraph(line, normalFont));
+                }
             }
         }
 
@@ -648,8 +820,7 @@ public class FileUploadController {
             Map<?, ?> json = new ObjectMapper().readValue(new URL(url), Map.class);
             List<?> res = (List<?>) json.get("results");
             if (!res.isEmpty()) return ((Map<?, ?>) res.get(0)).get("formatted").toString();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "Unknown Location";
     }
 
@@ -676,8 +847,7 @@ public class FileUploadController {
     private String sha256(File f) throws Exception {
         MessageDigest d = MessageDigest.getInstance("SHA-256");
         FileInputStream fis = new FileInputStream(f);
-        byte[] b = new byte[1024];
-        int n;
+        byte[] b = new byte[1024]; int n;
         while ((n = fis.read(b)) > 0) d.update(b, 0, n);
         fis.close();
         StringBuilder s = new StringBuilder();
@@ -694,38 +864,26 @@ public class FileUploadController {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    private double round(double v) {
-        return Math.round(v * 100.0) / 100.0;
-    }
+    private double round(double v) { return Math.round(v * 100.0) / 100.0; }
 
     private String getDimensions(Metadata metadata) {
         try {
             String width = null, height = null;
-            for (Directory d : metadata.getDirectories()) {
+            for (Directory d : metadata.getDirectories())
                 for (Tag t : d.getTags()) {
                     if (t.getTagName().equalsIgnoreCase("Image Width")) width = t.getDescription();
                     if (t.getTagName().equalsIgnoreCase("Image Height")) height = t.getDescription();
                 }
-            }
             if (width != null && height != null) return width + " x " + height;
             if (width != null) return width;
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "Not Available";
     }
 
-    private String safe(String value) {
-        return value == null ? "Not Provided" : value;
-    }
+    private String safe(String value) { return value == null ? "Not Provided" : value; }
 
     static class ImageData {
-        Date date;
-        double lat, lon;
-
-        ImageData(Date d, double la, double lo) {
-            date = d;
-            lat = la;
-            lon = lo;
-        }
+        Date date; double lat, lon;
+        ImageData(Date d, double la, double lo) { date = d; lat = la; lon = lo; }
     }
 }
